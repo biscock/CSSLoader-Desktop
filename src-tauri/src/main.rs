@@ -337,15 +337,6 @@ fn macos_backend_app() -> Option<PathBuf> {
 }
 
 #[cfg(target_os = "macos")]
-fn macos_backend_executable() -> Option<PathBuf> {
-  macos_backend_app().map(|app| {
-    app.join("Contents")
-      .join("MacOS")
-      .join("CssLoader-Standalone-Headless")
-  })
-}
-
-#[cfg(target_os = "macos")]
 async fn get_backend_path() -> Option<PathBuf> {
   // Used by ``check_backend_installed`` and ``download_latest_backend``.
   macos_backend_app()
@@ -370,14 +361,21 @@ fn launch_agent_path() -> Option<PathBuf> {
 }
 
 #[cfg(target_os = "macos")]
-fn write_launch_agent(executable: &Path) -> Result<(), String> {
+fn write_launch_agent(app_bundle: &Path) -> Result<(), String> {
   let plist_path = launch_agent_path().ok_or_else(|| "no home dir".to_string())?;
 
   if let Some(parent) = plist_path.parent() {
     fs::create_dir_all(parent).map_err(|e| format!("create LaunchAgents dir: {e}"))?;
   }
 
-  let exec_str = executable.to_string_lossy();
+  let app_str = app_bundle.to_string_lossy();
+  // Launch the .app through ``open -g`` rather than execing the raw binary
+  // inside ``Contents/MacOS``. ``open`` hands the launch off to Launch
+  // Services, which reads the bundle's Info.plist (LSUIElement etc.) and
+  // gives the process the proper user GUI session NSStatusItem needs to
+  // attach to. This matches the way ``start_backend`` launches the backend
+  // at install time, so the agent-launched instance and the install-time
+  // instance behave identically.
   let contents = format!(
     r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -387,7 +385,9 @@ fn write_launch_agent(executable: &Path) -> Result<(), String> {
     <string>com.deckthemes.cssloader.backend</string>
     <key>ProgramArguments</key>
     <array>
-        <string>{exec_str}</string>
+        <string>/usr/bin/open</string>
+        <string>-g</string>
+        <string>{app_str}</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
@@ -498,10 +498,8 @@ async fn download_latest_backend(backend_url: String) -> String {
   // so the user doesn't need to right-click "Open" through System Settings.
   let _ = Command::new("xattr").args(["-dr", "com.apple.quarantine", &app.to_string_lossy()]).status();
 
-  if let Some(exec) = macos_backend_executable() {
-    if let Err(e) = write_launch_agent(&exec) {
-      println!("Warning: could not register LaunchAgent: {e}");
-    }
+  if let Err(e) = write_launch_agent(&app) {
+    println!("Warning: could not register LaunchAgent: {e}");
   }
 
   String::from("SUCCESS")
