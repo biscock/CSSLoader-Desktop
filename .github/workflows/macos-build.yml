@@ -72,11 +72,14 @@ jobs:
 
       - name: Build Tauri app
         env:
-          # The bundle is unsigned by design \u2014 see README for the
-          # ``xattr -dr com.apple.quarantine`` workaround macOS users need.
-          APPLE_SIGNING_IDENTITY: ""
+          # The bundle is unsigned by design (signingIdentity: null in
+          # tauri.conf.json). The README documents the
+          # ``xattr -dr com.apple.quarantine`` step macOS users need on first
+          # launch. Do NOT set APPLE_SIGNING_IDENTITY here \u2014 even an
+          # empty string is interpreted as "sign with identity ''", which
+          # then fails because there is no matching keychain identity.
           CI: "true"
-        run: npx tauri build --target ${{ matrix.target }}
+        run: npx tauri build --target ${{ matrix.target }} --bundles app,dmg
 
       - name: Upload .dmg artifact
         uses: actions/upload-artifact@v4

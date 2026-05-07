@@ -531,20 +531,45 @@ async fn find_standalone_pids() -> Option<Vec<u32>> {
 #[cfg(target_os = "macos")]
 #[tauri::command]
 async fn kill_standalone_backend() -> String {
-  match find_standalone_pids().await {
-    Some(pids) => {
-      for pid in pids {
+  let pids = match find_standalone_pids().await {
+    Some(pids) => pids,
+    None => return String::from("ERROR: No Process Id"),
+  };
+
+  for pid in &pids {
+    unsafe {
+      // SIGTERM = 15. The backend's tray + asyncio loop both quit cleanly
+      // on SIGTERM via Python's signal handlers.
+      libc::kill(*pid as libc::pid_t, libc::SIGTERM);
+    }
+  }
+
+  // Wait for the processes to actually exit before returning. Otherwise a
+  // caller that immediately follows up with ``start_backend`` may detect
+  // the dying backend as still alive (because its HTTP server is still
+  // responding to ``dummyFunction`` during graceful shutdown) and skip
+  // launching a fresh copy, leaving the user with no backend running.
+  // Poll up to ~3s, then fall back to SIGKILL on anything still around.
+  let deadline = std::time::Instant::now() + std::time::Duration::from_millis(3000);
+  loop {
+    let alive: Vec<u32> = pids
+      .iter()
+      .copied()
+      .filter(|pid| unsafe { libc::kill(*pid as libc::pid_t, 0) == 0 })
+      .collect();
+    if alive.is_empty() {
+      return String::from("SUCCESS:");
+    }
+    if std::time::Instant::now() >= deadline {
+      for pid in &alive {
         unsafe {
-          // SIGTERM = 15. The backend's tray + asyncio loop both quit cleanly
-          // on SIGTERM via Python's signal handlers.
-          if libc::kill(pid as libc::pid_t, libc::SIGTERM) != 0 {
-            // Fall back to SIGKILL if the process wouldn't go down nicely.
-            libc::kill(pid as libc::pid_t, libc::SIGKILL);
-          }
+          libc::kill(*pid as libc::pid_t, libc::SIGKILL);
         }
       }
-      String::from("SUCCESS:")
+      // Give SIGKILL a moment to take effect, then return.
+      std::thread::sleep(std::time::Duration::from_millis(200));
+      return String::from("SUCCESS:");
     }
-    None => String::from("ERROR: No Process Id"),
+    std::thread::sleep(std::time::Duration::from_millis(100));
   }
 }

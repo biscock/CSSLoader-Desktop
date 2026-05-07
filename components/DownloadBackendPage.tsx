@@ -1,5 +1,6 @@
 import { useContext, useState } from "react";
 import { downloadBackend } from "../backend/tauriMethods";
+import { toast } from "../backend/toast";
 import { GenericInstallBackendModal } from "./GenericInstallBackendModal";
 import { osContext } from "@contexts/osContext";
 
@@ -28,10 +29,16 @@ export function DownloadBackendPage({
       ok = false;
     }
     if (!ok) {
-      // Reset progress so the action button becomes clickable again, and
-      // surface the failure instead of falsely claiming success.
+      // GenericInstallBackendModal only renders ``installText`` while
+      // ``installProg > 0``, so we surface the failure as a toast and
+      // re-enable the action button so the user can retry. The toast is
+      // visible regardless of the modal's internal state.
       setInstallProg(0);
-      setInstallText("Install failed \u2014 check your internet connection and try again");
+      setInstallText("");
+      toast(
+        "Backend install failed",
+        "Check your internet connection and try again."
+      );
       return;
     }
     setInstallProg(100);
