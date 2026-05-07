@@ -7,9 +7,7 @@ use home::home_dir;
 use zip_extract;
 
 #[cfg(any(target_os = "windows", target_os = "macos"))]
-use std::path::PathBuf;
-#[cfg(target_os = "macos")]
-use std::path::Path;
+use std::path::{Path, PathBuf};
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 use directories::BaseDirs;
 #[cfg(any(target_os = "windows", target_os = "macos"))]

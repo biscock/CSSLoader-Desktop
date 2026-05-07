@@ -20,7 +20,20 @@ export function DownloadBackendPage({
   async function installBackend() {
     setInstallProg(1);
     setInstallText("Downloading Backend");
-    await downloadBackend();
+    let ok = false;
+    try {
+      ok = await downloadBackend();
+    } catch (err) {
+      console.error("installBackend: downloadBackend threw", err);
+      ok = false;
+    }
+    if (!ok) {
+      // Reset progress so the action button becomes clickable again, and
+      // surface the failure instead of falsely claiming success.
+      setInstallProg(0);
+      setInstallText("Install failed \u2014 check your internet connection and try again");
+      return;
+    }
     setInstallProg(100);
     setInstallText("Install Complete");
     setTimeout(() => {
