@@ -567,10 +567,12 @@ async fn kill_standalone_backend() -> String {
           libc::kill(*pid as libc::pid_t, libc::SIGKILL);
         }
       }
-      // Give SIGKILL a moment to take effect, then return.
-      std::thread::sleep(std::time::Duration::from_millis(200));
+      // Give SIGKILL a moment to take effect, then return. ``tokio::time::sleep``
+      // (rather than ``std::thread::sleep``) yields the worker thread back to
+      // the runtime so other Tauri commands continue to make progress.
+      tokio::time::sleep(std::time::Duration::from_millis(200)).await;
       return String::from("SUCCESS:");
     }
-    std::thread::sleep(std::time::Duration::from_millis(100));
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
   }
 }

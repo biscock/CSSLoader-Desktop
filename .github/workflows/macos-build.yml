@@ -1,9 +1,13 @@
 name: macOS Build
 
 # This is the entry point for verifying that biscock's macOS port keeps
-# compiling on every push/PR. It produces an unsigned .dmg and a .app bundle
-# that can be downloaded as a build artifact \u2014 for actual macOS releases
-# we still rely on the regular release.yml workflow.
+# compiling on every push/PR. It produces an unsigned .app bundle that can
+# be downloaded as a build artifact \u2014 for actual macOS releases we still
+# rely on the regular release.yml workflow.
+#
+# We do NOT build .dmg here: Tauri 1.x's bundled bundle_dmg.sh is flaky on
+# the GitHub-hosted Apple-silicon runners (it relies on AppleScript hooks
+# that fail headless), and a zipped .app is just as good for distribution.
 
 on:
   push:
@@ -79,18 +83,18 @@ jobs:
           # empty string is interpreted as "sign with identity ''", which
           # then fails because there is no matching keychain identity.
           CI: "true"
-        run: npx tauri build --target ${{ matrix.target }} --bundles app,dmg
+        run: npx tauri build --target ${{ matrix.target }} --bundles app
 
-      - name: Upload .dmg artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: CSSLoader-Desktop-macOS-${{ matrix.arch }}-dmg
-          path: src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
-          if-no-files-found: warn
+      - name: Zip .app for upload
+        # ``ditto`` preserves macOS resource forks, extended attributes and
+        # symlinks inside the bundle. ``zip -r`` is lossy and would leave the
+        # downloaded .app broken.
+        working-directory: src-tauri/target/${{ matrix.target }}/release/bundle/macos
+        run: ditto -c -k --sequesterRsrc --keepParent "CSSLoader Desktop.app" "CSSLoader-Desktop-${{ matrix.arch }}.zip"
 
       - name: Upload .app artifact
         uses: actions/upload-artifact@v4
         with:
-          name: CSSLoader-Desktop-macOS-${{ matrix.arch }}-app
-          path: src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app
-          if-no-files-found: warn
+          name: CSSLoader-Desktop-macOS-${{ matrix.arch }}
+          path: src-tauri/target/${{ matrix.target }}/release/bundle/macos/CSSLoader-Desktop-${{ matrix.arch }}.zip
+          if-no-files-found: error
