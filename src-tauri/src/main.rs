@@ -402,15 +402,16 @@ fn write_launch_agent(executable: &Path) -> Result<(), String> {
 
   fs::write(&plist_path, contents).map_err(|e| format!("write plist: {e}"))?;
 
-  // Try to (re)load the agent so it starts immediately and on next login. If
-  // the agent already exists, ``bootstrap`` errors with "service already
-  // loaded" \u2014 ignore that case.
+  // Unload any previous instance of the agent so the next time launchd loads
+  // it (at the next user login) it picks up the freshly-written plist. We do
+  // *not* re-bootstrap here: bootstrap on a plist with RunAtLoad=true would
+  // immediately start the backend, and the surrounding ``install_backend``
+  // flow already calls ``start_backend`` to launch the .app via Launch
+  // Services. Two starts in a row would result in two competing copies on
+  // port 35821.
   let uid = unsafe { libc::getuid() };
   let _ = Command::new("launchctl")
     .args(["bootout", &format!("gui/{uid}/com.deckthemes.cssloader.backend")])
-    .status();
-  let _ = Command::new("launchctl")
-    .args(["bootstrap", &format!("gui/{uid}"), &plist_path.to_string_lossy()])
     .status();
 
   Ok(())
