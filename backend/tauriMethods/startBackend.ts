@@ -1,14 +1,11 @@
 import { dummyFunction } from "backend/pythonMethods";
-import { wrappedInvoke } from "backend/wrappedInvoke";
+
 export async function startBackend() {
+  // The backend's "dummy" check answers if the headless process is alive and
+  // responding on its local CDP-style endpoint. If it's already running we
+  // don't need to start a second copy.
   const isRunning = await dummyFunction();
-  if (!isRunning) {
-    return await wrappedInvoke("startBackend", [
-      "Start-Process",
-      "-FilePath",
-      "([Environment]::GetFolderPath('Startup')",
-      "+",
-      "'\\CssLoader-Standalone-Headless.exe')",
-    ]);
-  }
+  if (isRunning) return;
+  const { invoke } = await import("@tauri-apps/api");
+  return await invoke<string>("start_backend", {});
 }

@@ -1,13 +1,13 @@
-import {
-    BaseDirectory,
-    exists,
-  } from "@tauri-apps/api/fs";
-export async function checkIfStandaloneBackendExists() {
-    const backendExists = await exists(
-      "Microsoft\\Windows\\Start Menu\\Programs\\Startup\\CssLoader-Standalone-Headless.exe",
-      {
-        dir: BaseDirectory.Config,
-      }
-    );
-    return backendExists;
+// Whether the standalone CSSLoader headless backend is installed locally.
+//
+// The actual location depends on the OS (Windows Startup folder vs.
+// ~/Library/Application Support/CssLoader on macOS). The Rust side knows
+// which path to check, so we just delegate to ``check_backend_installed``.
+export async function checkIfStandaloneBackendExists(): Promise<boolean> {
+  const { invoke } = await import("@tauri-apps/api");
+  try {
+    return await invoke<boolean>("check_backend_installed", {});
+  } catch {
+    return false;
   }
+}
