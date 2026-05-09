@@ -1,7 +1,7 @@
 import "../styles/globals.css";
 import type { AppProps } from "next/app";
 import { Flags, Theme, ThemeError } from "../ThemeTypes";
-import { useState, useEffect, useMemo, use } from "react";
+import { useState, useEffect, useMemo, useRef, use } from "react";
 import "react-toastify/dist/ReactToastify.css";
 import {
   checkForNewBackend,
@@ -42,6 +42,14 @@ export default function App(AppProps: AppProps) {
   // Linux runs CSSLoader as a Decky plugin, so the Desktop app stays out of
   // backend lifecycle management there.
   const isManagedBackend = useMemo(() => isWindows || isMacOS, [isWindows, isMacOS]);
+  // ``recheckDummy`` is kicked off once on mount before ``getOS`` has
+  // resolved, which means any closure capturing ``isManagedBackend`` then
+  // sees ``false`` forever. We mirror it into a ref so the polling loop's
+  // callbacks can read the current value at the moment they fire.
+  const isManagedBackendRef = useRef(isManagedBackend);
+  useEffect(() => {
+    isManagedBackendRef.current = isManagedBackend;
+  }, [isManagedBackend]);
   const [maximized, setMaximized] = useState<boolean>(false);
   const [fullscreen, setFullscreen] = useState<boolean>(false);
 
@@ -89,12 +97,28 @@ export default function App(AppProps: AppProps) {
     recursiveCheck(
       dummyFuncTest,
       () => refreshThemes(true),
-      () => isManagedBackend && startBackend()
+      // Read isManagedBackend off the ref \u2014 this callback gets captured
+      // at mount time, before ``getOS()`` has resolved. Without the ref the
+      // value is locked to ``false`` for the lifetime of the loop.
+      () => isManagedBackendRef.current && startBackend(),
+      // Persistent-failure hook: if the dummy never comes back after the
+      // initial spawn, re-run startBackend every 5s. The standalone backend
+      // can quit during init on macOS when Steam isn't running yet (the
+      // CDP-attach call fails), so this loops until the user has both the
+      // backend AND Steam up \u2014 no manual "Force Restart Backend" click
+      // required.
+      () => isManagedBackendRef.current && startBackend(),
+      5
     );
   }
 
   async function refreshBackendExists() {
-    if (!isManagedBackend) return;
+    // Same closure caveat as ``refreshThemes`` / ``recheckDummy``: this
+    // function is reached via the ``onTrue`` callback that's captured at
+    // mount time before getOS() resolves. Without the ref the early
+    // return fires every time and ``backendExists`` is left at its
+    // mount-time false on Windows/macOS.
+    if (!isManagedBackendRef.current) return;
     const backendExists = await checkIfStandaloneBackendExists();
     setBackendExists(backendExists);
   }
@@ -112,7 +136,12 @@ export default function App(AppProps: AppProps) {
   }
 
   async function refreshThemes(reset: boolean = false): Promise<Theme[] | undefined> {
-    if (isManagedBackend) await refreshBackendExists();
+    // Read off the ref \u2014 same reason as ``recheckDummy``: the recursive
+    // dummy-poll captures ``refreshThemes`` at mount time when
+    // ``isManagedBackend`` is still false, so we'd otherwise never call
+    // ``refreshBackendExists`` on the very first successful poll for
+    // Windows/macOS, leaving ``backendExists`` mis-set on the initial load.
+    if (isManagedBackendRef.current) await refreshBackendExists();
     await dummyFuncTest();
     const backendVer = await getBackendVersion();
     if (backendVer.success) {

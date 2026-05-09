@@ -40,19 +40,24 @@ function BackendLoadingTagline() {
 export function BackendFailedPage() {
   const { isManagedBackend, isMacOS } = useContext(osContext);
   const { recheckDummy } = useContext(backendStatusContext);
-  const [hasWaited, setWaited] = useState<boolean>(false);
   const [canRestart, setCanRestart] = useState(true);
   useEffect(() => {
     recheckDummy();
-    setTimeout(() => {
-      setWaited(true);
-    }, 10000);
   }, []);
 
   async function forceRestart() {
-    if (canRestart) {
-      setCanRestart(true);
-      startBackend();
+    if (!canRestart) return;
+    // Disable the button briefly so a panicked user can't fire dozens of
+    // ``startBackend`` invocations in a row \u2014 each one shells out to a
+    // PowerShell/AppleScript-flavoured invoke and they can race past the
+    // ``dummyFunction`` guard inside ``startBackend`` if you hammer the
+    // click. 1.5s is plenty for the spawn to stabilise and the dummy poll
+    // to catch up.
+    setCanRestart(false);
+    try {
+      await startBackend();
+    } finally {
+      setTimeout(() => setCanRestart(true), 1500);
     }
   }
 
@@ -99,10 +104,9 @@ export function BackendFailedPage() {
         </div>
         {isManagedBackend && (
           <button
-            disabled={!hasWaited}
-            className="font-fancy absolute bottom-4 left-1/2 -translate-x-1/2 rounded-full border-2 border-borders-base1-dark bg-base-3-dark p-2 px-4 text-xs font-bold transition-all duration-300 hover:border-borders-base2-dark"
-            style={{ opacity: hasWaited ? 1 : 0 }}
-            onClick={() => hasWaited && forceRestart()}
+            disabled={!canRestart}
+            className="font-fancy absolute bottom-4 left-1/2 -translate-x-1/2 rounded-full border-2 border-borders-base1-dark bg-base-3-dark p-2 px-4 text-xs font-bold transition-all duration-300 hover:border-borders-base2-dark disabled:opacity-50"
+            onClick={() => forceRestart()}
           >
             Force Restart Backend
           </button>
