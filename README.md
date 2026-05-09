@@ -67,9 +67,24 @@ If you don't want the menu-bar icon at all, open CSSLoader Desktop → **Setting
 
 #### Updating
 
-In CSSLoader Desktop, **Settings** → **Update Backend** re-fetches the newest backend from the biscock/SDH-CssLoader release and replaces `~/Library/Application Support/CssLoader/CssLoader-Standalone-Headless.app` in place. To update CSSLoader Desktop itself, download the new `.app` zip from biscock/CSSLoader-Desktop releases and re-do steps 1-3 above.
+- **Backend** — In CSSLoader Desktop, **Settings** → **Update Backend** re-fetches the newest backend from the biscock/SDH-CssLoader release and replaces `~/Library/Application Support/CssLoader/CssLoader-Standalone-Headless.app` in place.
+- **Desktop** — `Update Backend` does **not** update the Desktop bundle itself. To pick up Desktop-side fixes (e.g. UI features, the Dock-icon behaviour landed in v1.3.2), download the newer `.app` zip from biscock/CSSLoader-Desktop releases, replace the existing `CSSLoader Desktop.app` in `/Applications` (or `~/Applications`), and re-run the `xattr -dr com.apple.quarantine` command from step 3 above.
 
-#### LaunchAgent (autostart on login)
+#### Run at Startup
+
+**Settings** → **Run at Startup** toggles whether CSSLoader Desktop auto-starts on login. When the toggle is on, the Desktop launches **silently in the background** (no window, no Dock icon) and is reachable through the backend's menu-bar icon → **Open Desktop App**. Clicking that promotes the Desktop to a regular foreground app (Dock icon appears, window opens). Closing the window collapses it back to the silent background state. Cmd-Q (or **Quit** from the menu bar while the window is up) fully exits.
+
+The toggle writes `~/Library/LaunchAgents/com.deckthemes.cssloader.desktop.plist`. To disable manually: `launchctl unload ~/Library/LaunchAgents/com.deckthemes.cssloader.desktop.plist` and delete the plist file.
+
+#### Auto-download dependencies
+
+When you apply a theme or preset whose `dependencies` reference themes you don't have installed, CSSLoader Desktop fetches them from DeckThemes automatically. Toast notifications in the corner show `Downloading X of Y - <name>` per dependency. If any names can't be resolved against the store (e.g. renamed, removed), a final toast lists the unresolved entries and the preset is applied with whatever was successfully fetched.
+
+#### Auto-restart backend
+
+If the backend isn't reachable within 5 seconds after Desktop launches, Desktop force-restarts it automatically and keeps re-attempting on a 5-second cadence until it comes up. This works around the case where Steam isn't running yet at login (the backend can't connect to Steam's CEF until Steam's process exists). The Welcome screen also exposes a **Force Restart Backend** button for manual recovery.
+
+#### LaunchAgent (backend autostart on login)
 
 Installing the backend writes `~/Library/LaunchAgents/com.deckthemes.cssloader.backend.plist` so the backend auto-starts on the next login via `launchd`. To disable: `launchctl unload ~/Library/LaunchAgents/com.deckthemes.cssloader.backend.plist` and delete the plist file.
 
