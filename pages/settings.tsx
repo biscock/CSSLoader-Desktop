@@ -9,6 +9,7 @@ import { osContext } from "@contexts/osContext";
 import { ImSpinner5 } from "react-icons/im";
 import { CreateTemplateTheme } from "@components/Settings";
 import { fetch, Body } from "@tauri-apps/api/http";
+import { invoke } from "@tauri-apps/api";
 
 export default function SettingsPage() {
   const [token, setToken] = useState<string>("");
@@ -50,6 +51,46 @@ export default function SettingsPage() {
 
   const [ongoingAction, setOngoingAction] = useState<boolean>(false);
   const [trayDisabled, setTrayDisabled] = useState<boolean>(false);
+
+  // "Run at startup" toggle. The Rust backend exposes:
+  //   * is_desktop_autostart_supported() -> boolean
+  //   * is_desktop_autostart_enabled()   -> boolean
+  //   * set_desktop_autostart(enabled)   -> void | Error
+  // The "supported" flag gates whether we render the toggle at all (false on
+  // Linux), and "enabled" populates the toggle's initial state.
+  const [autostartSupported, setAutostartSupported] = useState<boolean>(false);
+  const [autostartEnabled, setAutostartEnabled] = useState<boolean>(false);
+
+  async function fetchAutostartState() {
+    try {
+      const supported = await invoke<boolean>("is_desktop_autostart_supported");
+      setAutostartSupported(supported);
+      if (supported) {
+        const enabled = await invoke<boolean>("is_desktop_autostart_enabled");
+        setAutostartEnabled(enabled);
+      }
+    } catch (e) {
+      console.error("Failed to read autostart state:", e);
+    }
+  }
+
+  async function updateAutostart(value: boolean) {
+    setOngoingAction(true);
+    try {
+      await invoke("set_desktop_autostart", { enabled: value });
+      setAutostartEnabled(value);
+      toast(value ? "Run at startup enabled" : "Run at startup disabled");
+    } catch (e) {
+      console.error(e);
+      toast("Error Updating Run at Startup", String(e));
+    } finally {
+      setOngoingAction(false);
+    }
+  }
+
+  useEffect(() => {
+    void fetchAutostartState();
+  }, []);
 
   // Tray icon toggle: only applies when the Desktop app is the one starting
   // the headless backend (Windows/macOS), and only macOS exposes the tray icon
@@ -168,6 +209,28 @@ export default function SettingsPage() {
               </div>
             </div>
           </div>
+          {autostartSupported && (
+            <div className="flex w-full flex-col gap-4">
+              <span className="text-lg font-bold">Startup</span>
+              <div className="flex w-full items-center justify-center rounded-xl border-2 border-borders-base1-dark p-6 transition hover:border-borders-base2-dark dark:bg-base-3-dark">
+                <div className="flex flex-col">
+                  <span className="text-md font-bold">Run at Startup</span>
+                  <span className="text-sm">
+                    Automatically launch CSSLoader Desktop when you log in. The window stays
+                    hidden in the background — open it from the CSSLoader icon next to the
+                    system clock.
+                  </span>
+                </div>
+                <div className="ml-auto flex items-center">
+                  <ToggleSwitch
+                    checked={autostartEnabled}
+                    disabled={ongoingAction}
+                    onChange={updateAutostart}
+                  />
+                </div>
+              </div>
+            </div>
+          )}
           {isMacOS && (
             <div className="flex w-full flex-col gap-4">
               <span className="text-lg font-bold">macOS</span>

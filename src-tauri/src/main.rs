@@ -4,6 +4,7 @@
 )]
 use std::io::Cursor;
 use home::home_dir;
+use tauri::Manager;
 use zip_extract;
 
 #[cfg(any(target_os = "windows", target_os = "macos"))]
@@ -27,9 +28,42 @@ use {
 };
 
 
+/// CLI flag the autostart LaunchAgent / Windows Run-key passes when launching
+/// the app at login. We honour it by leaving the main window hidden so the
+/// user only sees the backend's tray icon until they explicitly ask to open
+/// the Desktop UI (via the tray's "Open Desktop App" entry, which spawns a
+/// fresh process via ``open -n -a`` and routes through the single-instance
+/// callback below).
+fn launched_silent() -> bool {
+  std::env::args().any(|a| a == "--silent")
+}
+
+/// Show & focus the main window if it isn't already.
+///
+/// Used both by the single-instance callback (when the user re-opens the app
+/// from the backend's tray) and by the regular setup path on a non-silent
+/// launch.
+fn show_main_window<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+  if let Some(window) = app.get_window("main") {
+    let _ = window.unminimize();
+    let _ = window.show();
+    let _ = window.set_focus();
+  }
+}
+
 #[cfg(target_os = "windows")]
 fn main() {
+  let silent = launched_silent();
   tauri::Builder::default()
+    .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+      show_main_window(app);
+    }))
+    .setup(move |app| {
+      if !silent {
+        show_main_window(&app.handle());
+      }
+      Ok(())
+    })
     .invoke_handler(tauri::generate_handler![
       download_template,
       kill_standalone_backend,
@@ -38,7 +72,10 @@ fn main() {
       install_backend,
       get_string_startup_dir,
       get_backend_asset_pattern,
-      check_backend_installed
+      check_backend_installed,
+      is_desktop_autostart_supported,
+      is_desktop_autostart_enabled,
+      set_desktop_autostart
     ])
     .run(tauri::generate_context!())
     .expect("error while running tauri application");
@@ -46,7 +83,17 @@ fn main() {
 
 #[cfg(target_os = "macos")]
 fn main() {
+  let silent = launched_silent();
   tauri::Builder::default()
+    .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+      show_main_window(app);
+    }))
+    .setup(move |app| {
+      if !silent {
+        show_main_window(&app.handle());
+      }
+      Ok(())
+    })
     .invoke_handler(tauri::generate_handler![
       download_template,
       kill_standalone_backend,
@@ -55,7 +102,10 @@ fn main() {
       install_backend,
       get_string_startup_dir,
       get_backend_asset_pattern,
-      check_backend_installed
+      check_backend_installed,
+      is_desktop_autostart_supported,
+      is_desktop_autostart_enabled,
+      set_desktop_autostart
     ])
     .run(tauri::generate_context!())
     .expect("error while running tauri application");
@@ -63,10 +113,59 @@ fn main() {
 
 #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
 fn main() {
+  // Linux builds run via the Decky/AppImage path and never autostart through
+  // the Desktop UI, so we don't register the single-instance plugin or the
+  // autostart commands here. We still respect ``--silent`` and show the main
+  // window for normal launches so the JSON config's ``visible: false`` doesn't
+  // leave Linux users with a permanently hidden window.
+  let silent = launched_silent();
   tauri::Builder::default()
-    .invoke_handler(tauri::generate_handler![download_template])
+    .setup(move |app| {
+      if !silent {
+        show_main_window(&app.handle());
+      }
+      Ok(())
+    })
+    .invoke_handler(tauri::generate_handler![
+      download_template,
+      is_desktop_autostart_supported,
+      is_desktop_autostart_enabled,
+      set_desktop_autostart
+    ])
     .run(tauri::generate_context!())
     .expect("error while running tauri application");
+}
+
+// =============================================================================
+// "Run at startup" command surface
+//
+// The frontend uses three commands:
+//   * ``is_desktop_autostart_supported`` — gates the Settings toggle entirely.
+//   * ``is_desktop_autostart_enabled``   — current state, used to populate the
+//                                          toggle when Settings opens.
+//   * ``set_desktop_autostart``          — install or remove the autostart
+//                                          entry.
+//
+// Each platform's implementation lives next to the rest of its OS-specific
+// code (Windows below, macOS at the bottom of the file). Linux is a pure
+// stub: the Desktop app on Linux runs from an AppImage and Linux users go
+// through Decky for backend startup, so we don't ship an autostart pathway
+// there. The stubs exist so the JS UI can call the commands unconditionally
+// without per-platform branches.
+// =============================================================================
+
+#[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+#[tauri::command]
+async fn is_desktop_autostart_supported() -> bool { false }
+
+#[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+#[tauri::command]
+async fn is_desktop_autostart_enabled() -> bool { false }
+
+#[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+#[tauri::command]
+async fn set_desktop_autostart(_enabled: bool) -> Result<(), String> {
+  Err("Autostart is not supported on this platform".to_string())
 }
 
 #[tauri::command]
@@ -313,6 +412,75 @@ async fn kill_pid(process_id: u32) -> String {
 
     return String::from("SUCCESS:");
   }
+}
+
+// -----------------------------------------------------------------------------
+// Windows: "Run at startup" via the HKCU Run registry key
+// -----------------------------------------------------------------------------
+//
+// We use the user-scoped Run key (no admin needed) and shell out to the
+// bundled ``reg.exe`` rather than pulling in a winreg crate just for three
+// calls.
+//
+// We deliberately do NOT use the Startup *folder*: the Startup folder only
+// runs the literal contents of its files, so we'd need to write an extra .lnk
+// or .bat shim to pass ``--silent``. ``reg`` can store the full command line
+// (with the ``--silent`` flag baked in) directly on the existing executable,
+// which is the simpler model.
+
+#[cfg(target_os = "windows")]
+const DESKTOP_AUTOSTART_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
+
+#[cfg(target_os = "windows")]
+const DESKTOP_AUTOSTART_VALUE: &str = "CSSLoader Desktop";
+
+#[cfg(target_os = "windows")]
+#[tauri::command]
+async fn is_desktop_autostart_supported() -> bool { true }
+
+#[cfg(target_os = "windows")]
+#[tauri::command]
+async fn is_desktop_autostart_enabled() -> bool {
+  match Command::new("reg")
+    .args(["query", DESKTOP_AUTOSTART_KEY, "/v", DESKTOP_AUTOSTART_VALUE])
+    .output()
+  {
+    Ok(out) => out.status.success(),
+    Err(_) => false,
+  }
+}
+
+#[cfg(target_os = "windows")]
+#[tauri::command]
+async fn set_desktop_autostart(enabled: bool) -> Result<(), String> {
+  if !enabled {
+    let _ = Command::new("reg")
+      .args(["delete", DESKTOP_AUTOSTART_KEY, "/v", DESKTOP_AUTOSTART_VALUE, "/f"])
+      .status();
+    return Ok(());
+  }
+
+  let exe = std::env::current_exe()
+    .map_err(|e| format!("could not determine current exe path: {e}"))?;
+  // ``reg add /d`` takes the literal data as a single argv. We want
+  //   "C:\path\to\CSSLoader Desktop.exe" --silent
+  // so quotes around the path are needed in case it contains spaces.
+  let value = format!("\"{}\" --silent", exe.display());
+
+  let status = Command::new("reg")
+    .args([
+      "add", DESKTOP_AUTOSTART_KEY,
+      "/v", DESKTOP_AUTOSTART_VALUE,
+      "/t", "REG_SZ",
+      "/d", &value,
+      "/f",
+    ])
+    .status()
+    .map_err(|e| format!("reg add failed to spawn: {e}"))?;
+  if !status.success() {
+    return Err(format!("reg add returned {status}"));
+  }
+  Ok(())
 }
 
 // =============================================================================
@@ -573,4 +741,124 @@ async fn kill_standalone_backend() -> String {
     }
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
   }
+}
+
+// -----------------------------------------------------------------------------
+// macOS: "Run at startup" via a per-user LaunchAgent plist
+// -----------------------------------------------------------------------------
+//
+// The plist drives ``launchd`` to run, on every user login:
+//
+//     /usr/bin/open -g -a "/Applications/CSSLoader Desktop.app" --args --silent
+//
+// ``-g`` keeps the launched app from grabbing focus. ``--args --silent`` is
+// passed through ``open`` to the .app's main(), where it suppresses the
+// initial main-window show; the user only sees the backend's tray icon.
+
+#[cfg(target_os = "macos")]
+const DESKTOP_AUTOSTART_LABEL: &str = "com.deckthemes.cssloader.desktop";
+
+#[cfg(target_os = "macos")]
+fn desktop_autostart_plist_path() -> Option<PathBuf> {
+  home_dir().map(|h| {
+    h.join("Library")
+      .join("LaunchAgents")
+      .join(format!("{DESKTOP_AUTOSTART_LABEL}.plist"))
+  })
+}
+
+/// Walk up from ``current_exe()`` to the enclosing ``.app`` bundle, if any.
+///
+/// During ``cargo run``/``tauri dev`` there is no .app bundle; in that case we
+/// return ``None`` so callers can surface a helpful error rather than writing
+/// a LaunchAgent that points at the dev binary inside ``target/``.
+#[cfg(target_os = "macos")]
+fn current_app_bundle() -> Option<PathBuf> {
+  let exe = std::env::current_exe().ok()?;
+  // Bundled layout: <bundle>.app/Contents/MacOS/<binary>
+  let bundle = exe.parent()?.parent()?.parent()?;
+  if bundle.extension().and_then(|s| s.to_str()) == Some("app") {
+    Some(bundle.to_path_buf())
+  } else {
+    None
+  }
+}
+
+#[cfg(target_os = "macos")]
+#[tauri::command]
+async fn is_desktop_autostart_supported() -> bool { true }
+
+#[cfg(target_os = "macos")]
+#[tauri::command]
+async fn is_desktop_autostart_enabled() -> bool {
+  desktop_autostart_plist_path().map(|p| p.exists()).unwrap_or(false)
+}
+
+#[cfg(target_os = "macos")]
+#[tauri::command]
+async fn set_desktop_autostart(enabled: bool) -> Result<(), String> {
+  let plist_path =
+    desktop_autostart_plist_path().ok_or_else(|| "could not resolve $HOME".to_string())?;
+  let uid = unsafe { libc::getuid() };
+
+  if !enabled {
+    // ``bootout`` unloads the agent from the running session; if it isn't
+    // currently loaded launchctl returns non-zero, which is fine here.
+    let _ = Command::new("launchctl")
+      .args(["bootout", &format!("gui/{uid}/{DESKTOP_AUTOSTART_LABEL}")])
+      .status();
+    if plist_path.exists() {
+      fs::remove_file(&plist_path).map_err(|e| format!("delete plist: {e}"))?;
+    }
+    return Ok(());
+  }
+
+  let app = current_app_bundle().ok_or_else(|| {
+    "could not resolve CSSLoader Desktop.app path; this only works from a packaged build"
+      .to_string()
+  })?;
+
+  if let Some(parent) = plist_path.parent() {
+    fs::create_dir_all(parent).map_err(|e| format!("create LaunchAgents dir: {e}"))?;
+  }
+
+  let app_str = app.to_string_lossy();
+  let contents = format!(
+    r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>{DESKTOP_AUTOSTART_LABEL}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/open</string>
+        <string>-g</string>
+        <string>-a</string>
+        <string>{app_str}</string>
+        <string>--args</string>
+        <string>--silent</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <false/>
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>
+"#
+  );
+
+  fs::write(&plist_path, contents).map_err(|e| format!("write plist: {e}"))?;
+
+  // Bootout any previous version of this agent so the next ``bootstrap`` (at
+  // login) picks up the freshly-written plist. We do *not* bootstrap here:
+  // bootstrap with RunAtLoad=true would immediately spawn a second Desktop
+  // instance, which is unnecessary while the user is already in the app.
+  let _ = Command::new("launchctl")
+    .args(["bootout", &format!("gui/{uid}/{DESKTOP_AUTOSTART_LABEL}")])
+    .status();
+
+  Ok(())
 }

@@ -19,7 +19,14 @@ zip-extract = "0.1.2"
 home = "0.5.4"
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
-tauri = { version = "1.2.4", features = ["dialog-all", "fs-create-dir", "fs-exists", "fs-read-file", "fs-write-file", "http-all", "os-all", "path-all", "shell-all", "updater", "window-close", "window-maximize", "window-minimize", "window-set-decorations", "window-set-focus", "window-set-fullscreen", "window-set-size", "window-start-dragging", "window-unmaximize", "window-unminimize"] }
+tauri = { version = "1.2.4", features = ["dialog-all", "fs-create-dir", "fs-exists", "fs-read-file", "fs-write-file", "http-all", "os-all", "path-all", "shell-all", "updater", "window-close", "window-hide", "window-maximize", "window-minimize", "window-set-decorations", "window-set-focus", "window-set-fullscreen", "window-set-size", "window-show", "window-start-dragging", "window-unmaximize", "window-unminimize"] }
+# Tauri 1.2.4 predates RunEvent::Reopen, so we cannot intercept the macOS
+# "open -a" reactivation event ourselves. We use the v1 branch of the
+# tauri-plugin-single-instance plugin instead: when the backend tray's "Open
+# Desktop App" entry runs ``open -n -a`` (forces a fresh process), the new
+# instance hands its argv to this plugin's callback in the existing instance
+# and exits, which is where we show the (potentially hidden) main window.
+tauri-plugin-single-instance = { git = "https://github.com/tauri-apps/plugins-workspace", branch = "v1" }
 reqwest = { version = "0.11.0", features = ["json"] }
 tokio = { version = "1", features = ["full"] }
 log = "0.4.20"
