@@ -113,7 +113,12 @@ export default function App(AppProps: AppProps) {
   }
 
   async function refreshBackendExists() {
-    if (!isManagedBackend) return;
+    // Same closure caveat as ``refreshThemes`` / ``recheckDummy``: this
+    // function is reached via the ``onTrue`` callback that's captured at
+    // mount time before getOS() resolves. Without the ref the early
+    // return fires every time and ``backendExists`` is left at its
+    // mount-time false on Windows/macOS.
+    if (!isManagedBackendRef.current) return;
     const backendExists = await checkIfStandaloneBackendExists();
     setBackendExists(backendExists);
   }
