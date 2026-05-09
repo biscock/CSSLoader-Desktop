@@ -85,6 +85,25 @@ jobs:
           CI: "true"
         run: npx tauri build --target ${{ matrix.target }} --bundles app
 
+      - name: Patch Info.plist to set LSUIElement=true
+        # Tauri 1.2.4 has no first-class option for arbitrary Info.plist
+        # keys, so we post-process the bundle. ``LSUIElement = true`` turns
+        # the .app into an "agent" / accessory app: no Dock icon and no
+        # menu-bar takeover at launch. The Rust runtime then promotes the
+        # process to ``NSApplicationActivationPolicyRegular`` (i.e. adds
+        # the Dock icon back) the first time it actually surfaces the
+        # main window, and demotes it again if the user closes the
+        # window. Without this patch a silent autostart (the Run at
+        # Startup feature) would still show a Dock icon even though the
+        # window is hidden.
+        working-directory: src-tauri/target/${{ matrix.target }}/release/bundle/macos
+        run: |
+          plutil -replace LSUIElement -bool true "CSSLoader Desktop.app/Contents/Info.plist" \
+            || plutil -insert LSUIElement -bool true "CSSLoader Desktop.app/Contents/Info.plist"
+          # Surface the resulting plist in the CI log so a regression is
+          # easy to spot from a failed/successful build alike.
+          plutil -p "CSSLoader Desktop.app/Contents/Info.plist" | grep -E 'LSUIElement|CFBundleIdentifier' || true
+
       - name: Zip .app for upload
         # ``ditto`` preserves macOS resource forks, extended attributes and
         # symlinks inside the bundle. ``zip -r`` is lossy and would leave the

@@ -44,10 +44,52 @@ fn launched_silent() -> bool {
 /// from the backend's tray) and by the regular setup path on a non-silent
 /// launch.
 fn show_main_window<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+  // On macOS we ship with ``LSUIElement = true`` to keep the app out of
+  // the Dock during silent autostart. Whenever we actually surface the
+  // window we promote ourselves to a regular Dock app so the user can
+  // see/Cmd-Tab to it; the matching ``hide`` is in the close-request
+  // handler in main().
+  #[cfg(target_os = "macos")]
+  set_dock_visible(true);
+
   if let Some(window) = app.get_window("main") {
     let _ = window.unminimize();
     let _ = window.show();
     let _ = window.set_focus();
+  }
+}
+
+/// Add or remove the macOS Dock icon at runtime by flipping
+/// ``NSApplication.activationPolicy``.
+///
+/// We use raw ``objc`` calls instead of pulling in the heavier ``cocoa``
+/// crate because all we need is one ``msg_send!`` per flip. The integer
+/// values come from the public ``NSApplicationActivationPolicy`` enum:
+///
+///   0  ``NSApplicationActivationPolicyRegular``    -> in the Dock, has UI
+///   1  ``NSApplicationActivationPolicyAccessory``  -> not in the Dock,
+///                                                     can still own
+///                                                     windows + a tray
+///                                                     icon
+///   2  ``NSApplicationActivationPolicyProhibited`` -> background-only
+///
+/// AppKit allows promoting an Accessory app to Regular at runtime; the
+/// reverse direction (Regular -> Accessory) is also documented as
+/// supported, though Apple notes it can only succeed if the app is not
+/// currently the active app. For our use (window hidden -> back to
+/// Accessory), the user has just closed the window so this is fine.
+#[cfg(target_os = "macos")]
+fn set_dock_visible(visible: bool) {
+  use objc::{class, msg_send, runtime::Object, sel, sel_impl};
+  // ``NSApplicationActivationPolicy`` is declared as ``NSInteger`` which
+  // is ``i64`` on every Apple platform we target.
+  let policy: i64 = if visible { 0 } else { 1 };
+  unsafe {
+    let app: *mut Object = msg_send![class!(NSApplication), sharedApplication];
+    if app.is_null() {
+      return;
+    }
+    let _: bool = msg_send![app, setActivationPolicy: policy];
   }
 }
 

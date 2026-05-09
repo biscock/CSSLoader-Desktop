@@ -58,6 +58,7 @@ dependencies = [
  "home",
  "libc",
  "log",
+ "objc",
  "reqwest",
  "serde",
  "serde_json",
