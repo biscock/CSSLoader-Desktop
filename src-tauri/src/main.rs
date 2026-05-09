@@ -38,16 +38,92 @@ fn launched_silent() -> bool {
   std::env::args().any(|a| a == "--silent")
 }
 
+/// Monotonic counter used to invalidate in-flight Dock-policy retry
+/// chains spawned by the macOS close handler. Every time
+/// ``show_main_window`` promotes the app to ``Regular`` we bump the
+/// counter, and the retry loop checks the generation it captured at
+/// spawn time before each attempt; if a newer ``show_main_window``
+/// happened in the meantime, the retry aborts so it can't race the
+/// promotion and silently flip us back to ``Accessory`` while a
+/// window is visible.
+#[cfg(target_os = "macos")]
+static DOCK_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// Show & focus the main window if it isn't already.
 ///
 /// Used both by the single-instance callback (when the user re-opens the app
 /// from the backend's tray) and by the regular setup path on a non-silent
 /// launch.
 fn show_main_window<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+  // On macOS we ship with ``LSUIElement = true`` to keep the app out of
+  // the Dock during silent autostart. Whenever we actually surface the
+  // window we promote ourselves to a regular Dock app so the user can
+  // see/Cmd-Tab to it; the matching ``hide`` is in the close-request
+  // handler in main().
+  #[cfg(target_os = "macos")]
+  {
+    // Promotion to Regular is documented to always succeed, so we
+    // discard the return value here. Demotion (in the close handler)
+    // is the direction that needs retry handling.
+    //
+    // ``set_dock_visible`` touches NSApplication, which is main-thread
+    // only. ``show_main_window`` is called both from ``setup`` (main
+    // thread) and from the single-instance plugin callback (which on
+    // the v1 branch of ``tauri-plugin-single-instance`` happens to be
+    // a no-op on macOS today, but we shouldn't rely on that), so
+    // bounce through ``AppHandle::run_on_main_thread`` to honour the
+    // contract regardless of caller.
+    let _ = app.run_on_main_thread(move || {
+      // Bump the generation BEFORE flipping so any in-flight retry
+      // observes the change atomically with the policy state.
+      DOCK_GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+      let _ = set_dock_visible(true);
+    });
+  }
+
   if let Some(window) = app.get_window("main") {
     let _ = window.unminimize();
     let _ = window.show();
     let _ = window.set_focus();
+  }
+}
+
+/// Add or remove the macOS Dock icon at runtime by flipping
+/// ``NSApplication.activationPolicy``.
+///
+/// We use raw ``objc`` calls instead of pulling in the heavier ``cocoa``
+/// crate because all we need is one ``msg_send!`` per flip. The integer
+/// values come from the public ``NSApplicationActivationPolicy`` enum:
+///
+///   0  ``NSApplicationActivationPolicyRegular``    -> in the Dock, has UI
+///   1  ``NSApplicationActivationPolicyAccessory``  -> not in the Dock,
+///                                                     can still own
+///                                                     windows + a tray
+///                                                     icon
+///   2  ``NSApplicationActivationPolicyProhibited`` -> background-only
+///
+/// AppKit allows promoting an Accessory app to Regular at runtime; the
+/// reverse direction (Regular -> Accessory) only succeeds if the app is
+/// not the currently active app. ``setActivationPolicy:`` returns
+/// ``BOOL`` to signal that, so we propagate the return value to callers
+/// that want to retry after the app is fully deactivated.
+///
+/// MUST be called from the main thread \u2014 NSApplication APIs are not
+/// thread-safe. Use ``tauri::Window::run_on_main_thread`` to dispatch
+/// onto the main runloop from background tasks.
+#[cfg(target_os = "macos")]
+fn set_dock_visible(visible: bool) -> bool {
+  use objc::{class, msg_send, runtime::Object, sel, sel_impl};
+  // ``NSApplicationActivationPolicy`` is declared as ``NSInteger`` which
+  // is ``i64`` on every Apple platform we target.
+  let policy: i64 = if visible { 0 } else { 1 };
+  unsafe {
+    let app: *mut Object = msg_send![class!(NSApplication), sharedApplication];
+    if app.is_null() {
+      return false;
+    }
+    let ok: bool = msg_send![app, setActivationPolicy: policy];
+    ok
   }
 }
 
@@ -93,6 +169,72 @@ fn main() {
         show_main_window(&app.handle());
       }
       Ok(())
+    })
+    .on_window_event(|event| {
+      // The matching demote-back for ``set_dock_visible(true)`` in
+      // ``show_main_window``. With ``LSUIElement = true`` baked into
+      // ``Info.plist`` the AppKit default is to NOT terminate the app
+      // when its last window closes (NSApplication's
+      // ``applicationShouldTerminateAfterLastWindowClosed:`` returns
+      // NO for accessory apps), so the process keeps running and the
+      // Dock icon would linger forever otherwise. Hiding the window +
+      // flipping the activation policy back to Accessory cleans up the
+      // Dock icon while keeping the process alive so a future click on
+      // the backend tray's "Open Desktop App" can route through the
+      // single-instance plugin and surface the same hidden window
+      // again. We deliberately ``prevent_close`` so the window object
+      // survives for that next surface.
+      if let tauri::WindowEvent::CloseRequested { api, .. } = event.event() {
+        api.prevent_close();
+        let window = event.window().clone();
+        let _ = window.hide();
+        // ``setActivationPolicy:`` from Regular to Accessory only
+        // succeeds while the app is *not* active. The window-hide
+        // above schedules the deactivation onto AppKit's runloop but
+        // doesn't synchronously take effect, so a same-tick flip
+        // would race the deactivation and silently fail (the call
+        // returns ``false`` and the Dock icon stays). Spawn an async
+        // retry chain that bounces back to the main thread (NSApp
+        // APIs are main-thread only) at increasing delays until
+        // either it succeeds or we give up after ~1s. ``visible(true)``
+        // doesn't need this dance; promotion to Regular is documented
+        // to always succeed.
+        //
+        // We capture ``DOCK_GENERATION`` at spawn time and re-check it
+        // inside each main-thread attempt. If ``show_main_window``
+        // bumps the counter while we're sleeping (e.g. a fast
+        // close-then-reopen via the tray), the retry aborts so it
+        // can't demote a now-visible window back to Accessory.
+        let captured_gen = DOCK_GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+        tauri::async_runtime::spawn(async move {
+          for delay_ms in [16u64, 64, 250, 750] {
+            tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+            if DOCK_GENERATION.load(std::sync::atomic::Ordering::SeqCst) != captured_gen {
+              return;
+            }
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            let dispatched = window.run_on_main_thread(move || {
+              // Re-check on the main thread to avoid the window
+              // between our load above and ``show_main_window``'s
+              // task running.
+              if DOCK_GENERATION.load(std::sync::atomic::Ordering::SeqCst) != captured_gen {
+                let _ = tx.send(true);
+                return;
+              }
+              let _ = tx.send(set_dock_visible(false));
+            });
+            // If the window/app is already torn down, run_on_main_thread
+            // errors out and rx will dangle. Bail in that case rather
+            // than burning the remaining attempts on a dead handle.
+            if dispatched.is_err() {
+              return;
+            }
+            if let Ok(true) = rx.await {
+              return;
+            }
+          }
+        });
+      }
     })
     .invoke_handler(tauri::generate_handler![
       download_template,
