@@ -136,6 +136,26 @@ fn main() {
       }
       Ok(())
     })
+    .on_window_event(|event| {
+      // The matching demote-back for ``set_dock_visible(true)`` in
+      // ``show_main_window``. With ``LSUIElement = true`` baked into
+      // ``Info.plist`` the AppKit default is to NOT terminate the app
+      // when its last window closes (NSApplication's
+      // ``applicationShouldTerminateAfterLastWindowClosed:`` returns
+      // NO for accessory apps), so the process keeps running and the
+      // Dock icon would linger forever otherwise. Hiding the window +
+      // flipping the activation policy back to Accessory cleans up the
+      // Dock icon while keeping the process alive so a future click on
+      // the backend tray's "Open Desktop App" can route through the
+      // single-instance plugin and surface the same hidden window
+      // again. We deliberately ``prevent_close`` so the window object
+      // survives for that next surface.
+      if let tauri::WindowEvent::CloseRequested { api, .. } = event.event() {
+        api.prevent_close();
+        let _ = event.window().hide();
+        set_dock_visible(false);
+      }
+    })
     .invoke_handler(tauri::generate_handler![
       download_template,
       kill_standalone_backend,
