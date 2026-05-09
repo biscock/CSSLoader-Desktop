@@ -50,7 +50,12 @@ fn show_main_window<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
   // see/Cmd-Tab to it; the matching ``hide`` is in the close-request
   // handler in main().
   #[cfg(target_os = "macos")]
-  set_dock_visible(true);
+  {
+    // Promotion to Regular is documented to always succeed, so we
+    // discard the return value here. Demotion (in the close handler)
+    // is the direction that needs retry handling.
+    let _ = set_dock_visible(true);
+  }
 
   if let Some(window) = app.get_window("main") {
     let _ = window.unminimize();
@@ -74,12 +79,16 @@ fn show_main_window<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
 ///   2  ``NSApplicationActivationPolicyProhibited`` -> background-only
 ///
 /// AppKit allows promoting an Accessory app to Regular at runtime; the
-/// reverse direction (Regular -> Accessory) is also documented as
-/// supported, though Apple notes it can only succeed if the app is not
-/// currently the active app. For our use (window hidden -> back to
-/// Accessory), the user has just closed the window so this is fine.
+/// reverse direction (Regular -> Accessory) only succeeds if the app is
+/// not the currently active app. ``setActivationPolicy:`` returns
+/// ``BOOL`` to signal that, so we propagate the return value to callers
+/// that want to retry after the app is fully deactivated.
+///
+/// MUST be called from the main thread \u2014 NSApplication APIs are not
+/// thread-safe. Use ``tauri::Window::run_on_main_thread`` to dispatch
+/// onto the main runloop from background tasks.
 #[cfg(target_os = "macos")]
-fn set_dock_visible(visible: bool) {
+fn set_dock_visible(visible: bool) -> bool {
   use objc::{class, msg_send, runtime::Object, sel, sel_impl};
   // ``NSApplicationActivationPolicy`` is declared as ``NSInteger`` which
   // is ``i64`` on every Apple platform we target.
@@ -87,9 +96,10 @@ fn set_dock_visible(visible: bool) {
   unsafe {
     let app: *mut Object = msg_send![class!(NSApplication), sharedApplication];
     if app.is_null() {
-      return;
+      return false;
     }
-    let _: bool = msg_send![app, setActivationPolicy: policy];
+    let ok: bool = msg_send![app, setActivationPolicy: policy];
+    ok
   }
 }
 
@@ -152,8 +162,37 @@ fn main() {
       // survives for that next surface.
       if let tauri::WindowEvent::CloseRequested { api, .. } = event.event() {
         api.prevent_close();
-        let _ = event.window().hide();
-        set_dock_visible(false);
+        let window = event.window().clone();
+        let _ = window.hide();
+        // ``setActivationPolicy:`` from Regular to Accessory only
+        // succeeds while the app is *not* active. The window-hide
+        // above schedules the deactivation onto AppKit's runloop but
+        // doesn't synchronously take effect, so a same-tick flip
+        // would race the deactivation and silently fail (the call
+        // returns ``false`` and the Dock icon stays). Spawn an async
+        // retry chain that bounces back to the main thread (NSApp
+        // APIs are main-thread only) at increasing delays until
+        // either it succeeds or we give up after ~1s. ``visible(true)``
+        // doesn't need this dance; promotion to Regular is documented
+        // to always succeed.
+        tauri::async_runtime::spawn(async move {
+          for delay_ms in [16u64, 64, 250, 750] {
+            tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            let dispatched = window.run_on_main_thread(move || {
+              let _ = tx.send(set_dock_visible(false));
+            });
+            // If the window/app is already torn down, run_on_main_thread
+            // errors out and rx will dangle. Bail in that case rather
+            // than burning the remaining attempts on a dead handle.
+            if dispatched.is_err() {
+              return;
+            }
+            if let Ok(true) = rx.await {
+              return;
+            }
+          }
+        });
       }
     })
     .invoke_handler(tauri::generate_handler![
