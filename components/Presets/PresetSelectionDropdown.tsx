@@ -43,6 +43,12 @@ export function PresetSelectionDropdown() {
             if (e === "Invalid State") return;
             if (e === "None") {
               await changePreset(e, themes);
+              // Pre-existing fall-through bug: without this return, "None"
+              // continues into the themes.find() lookup below and the new
+              // dep-download code, which would fire network requests if any
+              // theme happened to be named "None".
+              refreshThemes();
+              return;
             }
             // since e is the display_name, and toggle uses the real name, need to find that...
             // Still checks name as a fallback
