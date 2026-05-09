@@ -79,6 +79,31 @@ async function fetchThemesByNames(names: string[]): Promise<MinimalCSSThemeInfo[
  * the store but whose download itself errored \u2014 those are typically
  * transient and worth a separate toast.
  */
+/**
+ * Pure (no-network) helper that returns the subset of ``depNames`` not
+ * present in ``installedThemes``. Useful when the caller wants to decide
+ * whether to even prompt the user before kicking off a download \u2014
+ * specifically for the optional-deps flow, where we ask "Download
+ * optional themes?" only when there's actually something to download.
+ *
+ * Match installed themes against either their internal ``name`` (folder
+ * name) or their human-facing ``display_name``. Preset dependencies are
+ * generated from ``e.name`` so they always hit the first form, but a
+ * hand-authored theme.json may list dependencies by display name; without
+ * matching both we'd re-download themes that are already installed under
+ * a different internal name.
+ */
+export function findMissingDeps(depNames: string[], installedThemes: Theme[]): string[] {
+  if (depNames.length === 0) return [];
+  const uniqueDeps = Array.from(new Set(depNames));
+  const installedSet = new Set<string>();
+  for (const t of installedThemes) {
+    if (t.name) installedSet.add(t.name);
+    if (t.display_name) installedSet.add(t.display_name);
+  }
+  return uniqueDeps.filter((name) => !installedSet.has(name));
+}
+
 export async function resolveAndDownloadMissingDeps(
   depNames: string[],
   installedThemes: Theme[],
@@ -89,22 +114,7 @@ export async function resolveAndDownloadMissingDeps(
     return { downloaded: [], notFound: [], failed: [] };
   }
 
-  // De-duplicate while preserving the original order so progress toasts read
-  // naturally if the same name happens to appear twice.
-  const uniqueDeps = Array.from(new Set(depNames));
-
-  // Match installed themes against either their internal ``name`` (folder
-  // name) or their human-facing ``display_name``. Preset dependencies are
-  // generated from ``e.name`` so they always hit the first form, but a
-  // hand-authored theme.json may list dependencies by display name; without
-  // matching both we'd re-download themes that are already installed under
-  // a different internal name.
-  const installedSet = new Set<string>();
-  for (const t of installedThemes) {
-    if (t.name) installedSet.add(t.name);
-    if (t.display_name) installedSet.add(t.display_name);
-  }
-  const missing = uniqueDeps.filter((name) => !installedSet.has(name));
+  const missing = findMissingDeps(depNames, installedThemes);
 
   // Fast path: every dep is already installed locally.
   if (missing.length === 0) {

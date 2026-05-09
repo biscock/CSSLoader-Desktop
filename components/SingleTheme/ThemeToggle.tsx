@@ -4,7 +4,7 @@ import { ThemePatch } from "./ThemePatch";
 import { RiArrowDownSFill, RiArrowUpSFill } from "react-icons/ri";
 import { themeContext } from "@contexts/themeContext";
 import { generatePreset, generatePresetFromThemeNames, setThemeState, toast } from "../../backend";
-import { resolveAndDownloadMissingDeps } from "../../logic";
+import { findMissingDeps, resolveAndDownloadMissingDeps } from "../../logic";
 import { AlertDialog, ToggleSwitch } from "..";
 import { twMerge } from "tailwind-merge";
 
@@ -74,6 +74,54 @@ function OptionalDepsModal({
   );
 }
 
+/**
+ * Yes/No prompt asking the user whether to download an optional-dep theme's
+ * missing dependencies before showing the existing OptionalDepsModal. Optional
+ * deps are by definition optional, so we never want to silently download them
+ * \u2014 but we also don't want the user toggling a theme on only to hit a degraded
+ * experience because the optional themes weren't on disk. Hence: ask first.
+ */
+function OptionalDepsDownloadPrompt({
+  themeName,
+  missing,
+  onAnswer,
+}: {
+  themeName: string;
+  missing: string[];
+  onAnswer: (download: boolean) => void;
+}) {
+  return (
+    <AlertDialog
+      dontClose
+      defaultOpen
+      title="Download optional themes?"
+      description={`${themeName} can also enable ${
+        missing.length === 1 ? "1 optional theme" : `${missing.length} optional themes`
+      } that ${missing.length === 1 ? "isn't" : "aren't"} installed locally yet:\n\n${missing.join(
+        ", "
+      )}`}
+      cancelText="No"
+      actionText="Yes"
+      CustomAction={
+        <>
+          <button
+            className="font-fancy my-2 mx-2 ml-auto rounded-2xl bg-base-5.5-dark p-2 px-6"
+            onClick={() => onAnswer(false)}
+          >
+            No
+          </button>
+          <button
+            className="font-fancy my-2 mr-2 rounded-2xl bg-brandBlue p-2 px-6"
+            onClick={() => onAnswer(true)}
+          >
+            Yes
+          </button>
+        </>
+      }
+    />
+  );
+}
+
 export function ThemeToggle({
   data,
   collapsible = false,
@@ -85,6 +133,10 @@ export function ThemeToggle({
 }) {
   const { refreshThemes, selectedPreset, themes } = useContext(themeContext);
   const [showOptDepsModal, setShowOptDepsModal] = useState<boolean>(false);
+  // Missing optional deps surfaced by the most recent toggle; ``null`` means
+  // we're not currently asking. Held outside ``showOptDepsModal`` because the
+  // prompt fires *before* the existing modal and feeds into it.
+  const [missingOptDeps, setMissingOptDeps] = useState<string[] | null>(null);
   const [collapsed, setCollapsed] = useState<boolean>(true);
   const isPreset = useMemo(() => {
     if (data.flags.includes(Flags.isPreset)) {
@@ -104,6 +156,45 @@ export function ThemeToggle({
       {showOptDepsModal && (
         <OptionalDepsModal themeData={data} closeModal={() => setShowOptDepsModal(false)} />
       )}
+      {missingOptDeps && missingOptDeps.length > 0 && (
+        <OptionalDepsDownloadPrompt
+          themeName={data.display_name || data.name}
+          missing={missingOptDeps}
+          onAnswer={async (download) => {
+            // Whichever the user picks, the prompt closes; we then fall
+            // through to the existing OptionalDepsModal so they can pick
+            // which (now-installed) deps to enable.
+            setMissingOptDeps(null);
+            if (download) {
+              const result = await resolveAndDownloadMissingDeps(
+                data.dependencies,
+                themes,
+                ({ current, total, themeName }) =>
+                  toast(`Downloading ${current} of ${total}`, themeName)
+              );
+              if (result.downloaded.length > 0) {
+                // Same reasoning as the required-deps path: the backend
+                // needs to rescan disk before the OptionalDepsModal's
+                // ``setThemeState`` call can resolve the new deps.
+                await refreshThemes(true);
+              }
+              if (result.notFound.length > 0) {
+                toast(
+                  "Some optional themes could not be found",
+                  result.notFound.join(", ")
+                );
+              }
+              if (result.failed.length > 0) {
+                toast(
+                  "Some optional themes failed to download",
+                  result.failed.join(", ")
+                );
+              }
+            }
+            setShowOptDepsModal(true);
+          }}
+        />
+      )}
       <div className="flex justify-between gap-4">
         <div className="flex flex-col">
           <span className="font-fancy text-md font-bold">{data?.display_name || data.name}</span>
@@ -120,9 +211,21 @@ export function ThemeToggle({
 
               // Re-collapse menu
               setCollapsed(true);
-              // If theme has optional dependency flag
+              // If theme has optional dependency flag, branch into the
+              // optional-deps flow. If any of those optional deps aren't
+              // installed locally yet, ask the user first \u2014 we never
+              // silently download "optional" things, and we never want
+              // them to land in the OptionalDepsModal with deps the
+              // backend doesn't know about. If everything is already
+              // installed (or the theme has no deps), fall straight
+              // through to the existing modal as before.
               if (switchValue === true && data.flags.includes(Flags.optionalDeps)) {
-                setShowOptDepsModal(true);
+                const missing = findMissingDeps(data.dependencies, themes);
+                if (missing.length > 0) {
+                  setMissingOptDeps(missing);
+                } else {
+                  setShowOptDepsModal(true);
+                }
                 return;
               }
               // When enabling a theme/preset, auto-download any of its
