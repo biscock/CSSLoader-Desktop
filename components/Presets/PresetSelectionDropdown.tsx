@@ -60,7 +60,13 @@ export function PresetSelectionDropdown() {
                     toast(`Downloading ${current} of ${total}`, themeName)
                 );
                 if (result.downloaded.length > 0) {
-                  await refreshThemes();
+                  // ``refreshThemes(true)`` triggers ``reloadBackend()`` which
+                  // makes the backend rescan disk for newly written theme
+                  // folders. Without the ``true`` flag the backend would just
+                  // return its cached in-memory list and the freshly
+                  // downloaded deps would be invisible to the subsequent
+                  // ``changePreset`` call \u2014 making the whole feature a no-op.
+                  await refreshThemes(true);
                 }
                 if (result.notFound.length > 0) {
                   toast(
