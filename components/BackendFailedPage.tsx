@@ -38,7 +38,7 @@ function BackendLoadingTagline() {
 }
 
 export function BackendFailedPage() {
-  const { isWindows } = useContext(osContext);
+  const { isManagedBackend, isMacOS } = useContext(osContext);
   const { recheckDummy } = useContext(backendStatusContext);
   const [hasWaited, setWaited] = useState<boolean>(false);
   const [canRestart, setCanRestart] = useState(true);
@@ -55,6 +55,10 @@ export function BackendFailedPage() {
       startBackend();
     }
   }
+
+  // Linux installs the backend through Decky Loader, so we just point the user
+  // at the install docs and let them retry.
+  const linuxFallbackHref = "https://docs.deckthemes.com/CSSLoader/Install/#linux-or-steam-deck";
   return (
     <>
       <main className="relative flex h-full w-full flex-grow flex-col items-center justify-center pb-10">
@@ -68,7 +72,7 @@ export function BackendFailedPage() {
             draggable={false}
           />
           <h1 className="font-fancy text-xl font-extrabold tracking-tight">Welcome to CSSLoader</h1>
-          {isWindows ? (
+          {isManagedBackend ? (
             <BackendLoadingTagline />
           ) : (
             <span className="w-full max-w-xl text-center text-sm">
@@ -77,7 +81,7 @@ export function BackendFailedPage() {
                 className="cursor-pointer text-brandBlue underline"
                 onClick={async () => {
                   const { open } = await import("@tauri-apps/api/shell");
-                  await open("https://docs.deckthemes.com/CSSLoader/Install/#linux-or-steam-deck");
+                  await open(linuxFallbackHref);
                 }}
               >
                 followed the instructions and installed it
@@ -85,8 +89,15 @@ export function BackendFailedPage() {
               .
             </span>
           )}
+          {isMacOS && (
+            <span className="max-w-xl text-center text-xs text-fore-9-dark">
+              On macOS, Steam must be launched with the{" "}
+              <code className="text-fore-11-dark">-cef-enable-debugging</code> flag for CSSLoader
+              to attach. See the install instructions for the recommended way to set this.
+            </span>
+          )}
         </div>
-        {isWindows && (
+        {isManagedBackend && (
           <button
             disabled={!hasWaited}
             className="font-fancy absolute bottom-4 left-1/2 -translate-x-1/2 rounded-full border-2 border-borders-base1-dark bg-base-3-dark p-2 px-4 text-xs font-bold transition-all duration-300 hover:border-borders-base2-dark"

@@ -38,6 +38,10 @@ export default function App(AppProps: AppProps) {
   const [backendManifestVersion, setManifestVersion] = useState<number>(8);
   const [OS, setOS] = useState<string>("");
   const isWindows = useMemo(() => OS === "win32", [OS]);
+  const isMacOS = useMemo(() => OS === "darwin", [OS]);
+  // Linux runs CSSLoader as a Decky plugin, so the Desktop app stays out of
+  // backend lifecycle management there.
+  const isManagedBackend = useMemo(() => isWindows || isMacOS, [isWindows, isMacOS]);
   const [maximized, setMaximized] = useState<boolean>(false);
   const [fullscreen, setFullscreen] = useState<boolean>(false);
 
@@ -71,7 +75,7 @@ export default function App(AppProps: AppProps) {
   }, []);
 
   useBasicAsyncEffect(async () => {
-    if (!isWindows) return;
+    if (!isManagedBackend) return;
     refreshBackendExists();
     const isStandalone = await checkIfBackendIsStandalone();
     if (!isStandalone) return;
@@ -79,18 +83,18 @@ export default function App(AppProps: AppProps) {
     if (!newStandalone) return;
     setNewBackend(newStandalone as string);
     setShowNewBackend(true);
-  }, [isWindows]);
+  }, [isManagedBackend]);
 
   async function recheckDummy() {
     recursiveCheck(
       dummyFuncTest,
       () => refreshThemes(true),
-      () => isWindows && startBackend()
+      () => isManagedBackend && startBackend()
     );
   }
 
   async function refreshBackendExists() {
-    if (!isWindows) return;
+    if (!isManagedBackend) return;
     const backendExists = await checkIfStandaloneBackendExists();
     setBackendExists(backendExists);
   }
@@ -108,7 +112,7 @@ export default function App(AppProps: AppProps) {
   }
 
   async function refreshThemes(reset: boolean = false): Promise<Theme[] | undefined> {
-    if (isWindows) await refreshBackendExists();
+    if (isManagedBackend) await refreshBackendExists();
     await dummyFuncTest();
     const backendVer = await getBackendVersion();
     if (backendVer.success) {
@@ -144,7 +148,9 @@ export default function App(AppProps: AppProps) {
           backendManifestVersion,
         }}
       >
-        <osContext.Provider value={{ OS, isWindows, maximized, fullscreen }}>
+        <osContext.Provider
+          value={{ OS, isWindows, isMacOS, isManagedBackend, maximized, fullscreen }}
+        >
           <FontContext>
             <AppFrame>
               <DynamicTitleBar />

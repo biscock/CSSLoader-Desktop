@@ -46,9 +46,36 @@ export default function SettingsPage() {
   }, []);
 
   const { refreshThemes } = useContext(themeContext);
-  const { isWindows } = useContext(osContext);
+  const { isMacOS, isManagedBackend } = useContext(osContext);
 
   const [ongoingAction, setOngoingAction] = useState<boolean>(false);
+  const [trayDisabled, setTrayDisabled] = useState<boolean>(false);
+
+  // Tray icon toggle: only applies when the Desktop app is the one starting
+  // the headless backend (Windows/macOS), and only macOS exposes the tray icon
+  // today. The setting is read by the Python backend from its config store on
+  // startup and on SIGHUP, so we restart it after a change.
+  async function fetchTrayDisabled() {
+    const res = await storeRead("disable_tray");
+    if (res.success) setTrayDisabled(res.result === "1");
+  }
+  async function updateTrayDisabled(value: boolean) {
+    setOngoingAction(true);
+    const res = await storeWrite("disable_tray", value ? "1" : "0");
+    if (res.success) {
+      // Bounce the backend so the new value takes effect immediately.
+      await killBackend().catch(() => {});
+      await startBackend().catch(() => {});
+      setTrayDisabled(value);
+      toast(value ? "Tray icon disabled" : "Tray icon enabled");
+    } else {
+      toast("Error Updating Tray Setting");
+    }
+    setOngoingAction(false);
+  }
+  useEffect(() => {
+    if (isManagedBackend) void fetchTrayDisabled();
+  }, [isManagedBackend]);
 
   // const [showBackendInstallModal, setShowBackendInstallModal] = useState<boolean>(false);
   // const [installText, setInstallText] = useState<string>("");
@@ -141,10 +168,31 @@ export default function SettingsPage() {
               </div>
             </div>
           </div>
+          {isMacOS && (
+            <div className="flex w-full flex-col gap-4">
+              <span className="text-lg font-bold">macOS</span>
+              <div className="flex w-full items-center justify-center rounded-xl border-2 border-borders-base1-dark p-6 transition hover:border-borders-base2-dark dark:bg-base-3-dark">
+                <div className="flex flex-col">
+                  <span className="text-md font-bold">Show Menu Bar Icon</span>
+                  <span className="text-sm">
+                    The headless backend shows a small CSSLoader icon next to the system clock.
+                    Toggling this restarts the backend.
+                  </span>
+                </div>
+                <div className="ml-auto flex items-center">
+                  <ToggleSwitch
+                    checked={!trayDisabled}
+                    disabled={ongoingAction}
+                    onChange={(value) => updateTrayDisabled(!value)}
+                  />
+                </div>
+              </div>
+            </div>
+          )}
           <div className="flex w-full flex-col gap-4">
             <span className="text-lg font-bold">Developer Settings</span>
             <CreateTemplateTheme {...{ ongoingAction }} />
-            {isWindows && (
+            {isManagedBackend && (
               <>
                 <button
                   disabled={ongoingAction}

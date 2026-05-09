@@ -30,6 +30,8 @@
         "renameFile": false,
         "scope": [
           "$CONFIG\\Microsoft\\Windows\\Start Menu\\Programs\\Startup\\*",
+          "$DATA/CssLoader",
+          "$DATA/CssLoader/*",
           "$APPDATA/standaloneVersion.txt",
           "$APPDATA",
           "$HOME/homebrew/themes/*"
@@ -70,51 +72,8 @@
       "shell": {
         "all": true,
         "execute": false,
-        "open": false,
-        "scope": [
-          {
-            "name": "killBackend",
-            "cmd": "powershell.exe",
-            "args": ["taskkill", "/IM", "CssLoader-Standalone-Headless.exe", "/F"]
-          },
-          {
-            "name": "copyBackend",
-            "cmd": "powershell.exe",
-            "args": [
-              "Copy-Item",
-              "-Path",
-              { "validator": ".*" },
-              "-Destination",
-              "([Environment]::GetFolderPath('Startup')",
-              "+",
-              "'\\CssLoader-Standalone-Headless.exe')"
-            ]
-          },
-          {
-            "name": "downloadBackend",
-            "cmd": "powershell.exe",
-            "args": [
-              "Invoke-WebRequest",
-              "-Uri",
-              "https://github.com/suchmememanyskill/SDH-CssLoader/releases/latest/download/CssLoader-Standalone-Headless.exe",
-              "-OutFile",
-              "([Environment]::GetFolderPath('Startup')",
-              "+",
-              "'\\CssLoader-Standalone-Headless.exe')"
-            ]
-          },
-          {
-            "name": "startBackend",
-            "cmd": "powershell.exe",
-            "args": [
-              "Start-Process",
-              "-FilePath",
-              "([Environment]::GetFolderPath('Startup')",
-              "+",
-              "'\\CssLoader-Standalone-Headless.exe')"
-            ]
-          }
-        ],
+        "open": true,
+        "scope": [],
         "sidecar": false
       },
       "all": false,
@@ -132,7 +91,9 @@
         "scope": [
           "http://127.0.0.1:35821/req",
           "https://api.deckthemes.com/*",
-          "https://api.github.com/repos/suchmememanyskill/SDH-CssLoader/*"
+          "https://api.github.com/repos/suchmememanyskill/SDH-CssLoader/*",
+          "https://api.github.com/repos/biscock/SDH-CssLoader/*",
+          "https://github.com/biscock/SDH-CssLoader/*"
         ]
       }
     },
@@ -162,7 +123,7 @@
       },
       "resources": [],
       "shortDescription": "",
-      "targets": ["appimage", "msi", "updater"],
+      "targets": ["appimage", "msi", "updater", "dmg", "app"],
       "windows": {
         "certificateThumbprint": null,
         "digestAlgorithm": "sha256",
