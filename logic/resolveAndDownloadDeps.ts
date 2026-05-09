@@ -93,7 +93,17 @@ export async function resolveAndDownloadMissingDeps(
   // naturally if the same name happens to appear twice.
   const uniqueDeps = Array.from(new Set(depNames));
 
-  const installedSet = new Set(installedThemes.map((t) => t.name));
+  // Match installed themes against either their internal ``name`` (folder
+  // name) or their human-facing ``display_name``. Preset dependencies are
+  // generated from ``e.name`` so they always hit the first form, but a
+  // hand-authored theme.json may list dependencies by display name; without
+  // matching both we'd re-download themes that are already installed under
+  // a different internal name.
+  const installedSet = new Set<string>();
+  for (const t of installedThemes) {
+    if (t.name) installedSet.add(t.name);
+    if (t.display_name) installedSet.add(t.display_name);
+  }
   const missing = uniqueDeps.filter((name) => !installedSet.has(name));
 
   // Fast path: every dep is already installed locally.
