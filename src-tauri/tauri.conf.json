@@ -43,7 +43,7 @@
         "center": false,
         "close": true,
         "create": false,
-        "hide": false,
+        "hide": true,
         "maximize": true,
         "minimize": true,
         "print": false,
@@ -64,7 +64,7 @@
         "setSize": true,
         "setSkipTaskbar": false,
         "setTitle": false,
-        "show": false,
+        "show": true,
         "startDragging": true,
         "unmaximize": true,
         "unminimize": true
@@ -151,7 +151,8 @@
         "transparent": true,
         "width": 800,
         "minWidth": 460,
-        "minHeight": 300
+        "minHeight": 300,
+        "visible": false
       }
     ]
   }
