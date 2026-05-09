@@ -2,9 +2,13 @@
     <img src="https://github.com/beebls/CSSLoader-Desktop/assets/52982404/172047f5-0682-4d1e-8e0d-3acb6ae958f6">
     <br><br>
     <h1 align="center">CSSLoader Desktop</h1>
-    <h4 align="center">A native standalone styling engine for Steam on Windows and Linux</h4>
+    <h4 align="center">A native standalone styling engine for Steam on Windows, macOS, and Linux</h4>
     <p align="center">Inject custom styles into Steam's desktop and Big Picture Mode interfaces, browse an ever-growing storefront of community creations, easily manage your themes' settings and updates, and more.</p>
 </p>
+
+> **biscock fork — macOS support**
+>
+> This fork adds first-class macOS support (Apple Silicon + Intel) on top of the upstream Windows/Linux build. macOS releases live under [biscock/CSSLoader-Desktop releases](https://github.com/biscock/CSSLoader-Desktop/releases) and pull their backend from [biscock/SDH-CssLoader releases](https://github.com/biscock/SDH-CssLoader/releases). The Windows and Linux/Decky paths in this fork are identical to upstream.
 
 <br><br>
 
@@ -34,6 +38,40 @@
 2. Once downloaded, run the installer, and follow the onscreen instructions.
 3. If this is your first time installing CSSLoader Desktop, upon launching the app you will be prompted to install CSSLoader's Backend. Click 'Install'
 4. CSSLoader Desktop is now installed! Continue to [Creating Symlink](#creating-symlink) if you want to set up custom images/fonts.
+
+### macOS
+
+macOS bundles are unsigned. macOS will block first launch under Gatekeeper; the steps below show how to work around that with a single `xattr` command.
+
+1. Download the matching zip from the latest [biscock/CSSLoader-Desktop release](https://github.com/biscock/CSSLoader-Desktop/releases/latest):
+   - **Apple Silicon** (M1/M2/M3/M4): `CSSLoader-Desktop-arm64.zip`
+   - **Intel**: `CSSLoader-Desktop-x86_64.zip`
+2. Unzip and move `CSSLoader Desktop.app` into `/Applications/` (or `~/Applications/`).
+3. Strip the Gatekeeper quarantine attribute so macOS lets the unsigned app run:
+   ```
+   xattr -dr com.apple.quarantine "/Applications/CSSLoader Desktop.app"
+   ```
+4. Open CSSLoader Desktop. The onboarding screen prompts you to install the standalone backend; click **Install Backend**. It pulls the matching zip from the latest [biscock/SDH-CssLoader release](https://github.com/biscock/SDH-CssLoader/releases) automatically.
+5. Tell Steam to expose its CEF debugger so CSSLoader can inject styles. In the Steam Mac client: right-click **Steam** in your Library (or right-click the entry under Library → Software), open **Properties**, and set **Launch Options** to:
+   ```
+   -cef-enable-debugging %command%
+   ```
+   Restart Steam after saving.
+6. Drop themes into `~/homebrew/themes/` (or use the in-app theme store) and click **Reload Themes**.
+
+#### Menu-bar icon
+
+The backend lives in the macOS menu bar (top-right of the screen, next to Wi-Fi/battery) as a paint-roller icon. Right-click for a quick menu — themes folder, Desktop app, quit. The Dock entry is intentionally hidden via `LSUIElement=true` in the bundle's `Info.plist`.
+
+If you don't want the menu-bar icon at all, open CSSLoader Desktop → **Settings** → toggle **Show Menu Bar Icon** off. The backend bounces and continues running without it.
+
+#### Updating
+
+In CSSLoader Desktop, **Settings** → **Update Backend** re-fetches the newest backend from the biscock/SDH-CssLoader release and replaces `~/Library/Application Support/CssLoader/CssLoader-Standalone-Headless.app` in place. To update CSSLoader Desktop itself, download the new `.app` zip from biscock/CSSLoader-Desktop releases and re-do steps 1-3 above.
+
+#### LaunchAgent (autostart on login)
+
+Installing the backend writes `~/Library/LaunchAgents/com.deckthemes.cssloader.backend.plist` so the backend auto-starts on the next login via `launchd`. To disable: `launchctl unload ~/Library/LaunchAgents/com.deckthemes.cssloader.backend.plist` and delete the plist file.
 
 ### Linux/Steam Deck
 
