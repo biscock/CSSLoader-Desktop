@@ -38,6 +38,17 @@ fn launched_silent() -> bool {
   std::env::args().any(|a| a == "--silent")
 }
 
+/// Monotonic counter used to invalidate in-flight Dock-policy retry
+/// chains spawned by the macOS close handler. Every time
+/// ``show_main_window`` promotes the app to ``Regular`` we bump the
+/// counter, and the retry loop checks the generation it captured at
+/// spawn time before each attempt; if a newer ``show_main_window``
+/// happened in the meantime, the retry aborts so it can't race the
+/// promotion and silently flip us back to ``Accessory`` while a
+/// window is visible.
+#[cfg(target_os = "macos")]
+static DOCK_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// Show & focus the main window if it isn't already.
 ///
 /// Used both by the single-instance callback (when the user re-opens the app
@@ -63,6 +74,9 @@ fn show_main_window<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     // bounce through ``AppHandle::run_on_main_thread`` to honour the
     // contract regardless of caller.
     let _ = app.run_on_main_thread(move || {
+      // Bump the generation BEFORE flipping so any in-flight retry
+      // observes the change atomically with the policy state.
+      DOCK_GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
       let _ = set_dock_visible(true);
     });
   }
@@ -185,11 +199,28 @@ fn main() {
         // either it succeeds or we give up after ~1s. ``visible(true)``
         // doesn't need this dance; promotion to Regular is documented
         // to always succeed.
+        //
+        // We capture ``DOCK_GENERATION`` at spawn time and re-check it
+        // inside each main-thread attempt. If ``show_main_window``
+        // bumps the counter while we're sleeping (e.g. a fast
+        // close-then-reopen via the tray), the retry aborts so it
+        // can't demote a now-visible window back to Accessory.
+        let captured_gen = DOCK_GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
         tauri::async_runtime::spawn(async move {
           for delay_ms in [16u64, 64, 250, 750] {
             tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+            if DOCK_GENERATION.load(std::sync::atomic::Ordering::SeqCst) != captured_gen {
+              return;
+            }
             let (tx, rx) = tokio::sync::oneshot::channel();
             let dispatched = window.run_on_main_thread(move || {
+              // Re-check on the main thread to avoid the window
+              // between our load above and ``show_main_window``'s
+              // task running.
+              if DOCK_GENERATION.load(std::sync::atomic::Ordering::SeqCst) != captured_gen {
+                let _ = tx.send(true);
+                return;
+              }
               let _ = tx.send(set_dock_visible(false));
             });
             // If the window/app is already torn down, run_on_main_thread
