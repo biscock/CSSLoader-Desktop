@@ -131,7 +131,12 @@ export default function App(AppProps: AppProps) {
   }
 
   async function refreshThemes(reset: boolean = false): Promise<Theme[] | undefined> {
-    if (isManagedBackend) await refreshBackendExists();
+    // Read off the ref \u2014 same reason as ``recheckDummy``: the recursive
+    // dummy-poll captures ``refreshThemes`` at mount time when
+    // ``isManagedBackend`` is still false, so we'd otherwise never call
+    // ``refreshBackendExists`` on the very first successful poll for
+    // Windows/macOS, leaving ``backendExists`` mis-set on the initial load.
+    if (isManagedBackendRef.current) await refreshBackendExists();
     await dummyFuncTest();
     const backendVer = await getBackendVersion();
     if (backendVer.success) {
