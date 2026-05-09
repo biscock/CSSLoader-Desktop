@@ -54,7 +54,17 @@ fn show_main_window<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     // Promotion to Regular is documented to always succeed, so we
     // discard the return value here. Demotion (in the close handler)
     // is the direction that needs retry handling.
-    let _ = set_dock_visible(true);
+    //
+    // ``set_dock_visible`` touches NSApplication, which is main-thread
+    // only. ``show_main_window`` is called both from ``setup`` (main
+    // thread) and from the single-instance plugin callback (which on
+    // the v1 branch of ``tauri-plugin-single-instance`` happens to be
+    // a no-op on macOS today, but we shouldn't rely on that), so
+    // bounce through ``AppHandle::run_on_main_thread`` to honour the
+    // contract regardless of caller.
+    let _ = app.run_on_main_thread(move || {
+      let _ = set_dock_visible(true);
+    });
   }
 
   if let Some(window) = app.get_window("main") {
