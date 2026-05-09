@@ -29,17 +29,37 @@ export interface DepDownloadResult {
  * entries; matching by name is what we rely on, since a preset's
  * ``theme.json`` references its dependencies by display name (e.g.
  * ``"Some Theme By X 2.1"``).
+ *
+ * We deliberately do NOT batch all names into a single ``?ids=A.B.C``
+ * request: theme display names can contain literal periods (e.g.
+ * ``"Krongraphics 2.0"``), and the API splits the ``ids`` parameter on
+ * ``.`` server-side, which would corrupt every name with a dot in it. We
+ * also need ``encodeURIComponent`` to handle spaces, ``&``, ``#``, ``+``
+ * and other URL-significant characters that show up freely in display
+ * names. So instead we issue one request per name in parallel \u2014 the
+ * deckthemes API is fine with this, and 30-ish parallel HTTPS calls take
+ * about the same wall-clock time as a single batched call.
  */
 async function fetchThemesByNames(names: string[]): Promise<MinimalCSSThemeInfo[]> {
   if (names.length === 0) return [];
-  const queryStr = "?ids=" + names.join(".");
-  try {
-    const res = await fetch<MinimalCSSThemeInfo[]>(`${apiUrl}/themes/ids${queryStr}`);
-    return res.data ?? [];
-  } catch (err) {
-    console.error("Failed to query store for dependencies:", err);
-    return [];
-  }
+
+  const requests = names.map(async (name) => {
+    try {
+      const queryStr = "?ids=" + encodeURIComponent(name);
+      const res = await fetch<MinimalCSSThemeInfo[]>(`${apiUrl}/themes/ids${queryStr}`);
+      // The endpoint returns an array even for a single id; pick the
+      // first entry whose name or id matches what we asked for. This is
+      // belt-and-braces in case the API ever decides to fuzzy-match.
+      const data = res.data ?? [];
+      return data.find((d) => d.name === name || d.id === name) ?? null;
+    } catch (err) {
+      console.error(`Failed to query store for dependency "${name}":`, err);
+      return null;
+    }
+  });
+
+  const results = await Promise.all(requests);
+  return results.filter((r): r is MinimalCSSThemeInfo => r !== null);
 }
 
 /**
