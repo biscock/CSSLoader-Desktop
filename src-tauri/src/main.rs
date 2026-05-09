@@ -88,6 +88,51 @@ fn show_main_window<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
   }
 }
 
+/// Spawn an async retry chain that demotes the activation policy to
+/// Accessory, bouncing each attempt onto the main thread (NSApp APIs
+/// are main-thread only) at increasing delays until the flip succeeds
+/// or we exhaust the budget.
+///
+/// Demotion (Regular -> Accessory) only succeeds while the app is *not*
+/// the foreground/active app, but the deactivation triggered by hiding
+/// our last window is delivered asynchronously on AppKit's runloop. A
+/// same-tick flip therefore races the deactivation and silently fails
+/// (the call returns ``false`` and the Dock icon stays). Retrying at
+/// 16ms / 64ms / 250ms / 750ms gives AppKit time to deactivate.
+///
+/// We capture ``DOCK_GENERATION`` at spawn time and re-check it each
+/// attempt so a fresh ``show_main_window`` (which bumps the counter)
+/// can preempt a stale demotion and not silently flip a now-visible
+/// window back into accessory mode.
+#[cfg(target_os = "macos")]
+fn schedule_demote_to_accessory<R: tauri::Runtime>(window: tauri::Window<R>) {
+  let captured_gen = DOCK_GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+  tauri::async_runtime::spawn(async move {
+    for delay_ms in [16u64, 64, 250, 750] {
+      tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+      if DOCK_GENERATION.load(std::sync::atomic::Ordering::SeqCst) != captured_gen {
+        return;
+      }
+      let (tx, rx) = tokio::sync::oneshot::channel();
+      let dispatched = window.run_on_main_thread(move || {
+        if DOCK_GENERATION.load(std::sync::atomic::Ordering::SeqCst) != captured_gen {
+          let _ = tx.send(true);
+          return;
+        }
+        let _ = tx.send(set_dock_visible(false));
+      });
+      // If the window/app is already torn down, bail rather than burn
+      // the remaining attempts on a dead handle.
+      if dispatched.is_err() {
+        return;
+      }
+      if let Ok(true) = rx.await {
+        return;
+      }
+    }
+  });
+}
+
 /// Add or remove the macOS Dock icon at runtime by flipping
 /// ``NSApplication.activationPolicy``.
 ///
@@ -160,7 +205,7 @@ fn main() {
 #[cfg(target_os = "macos")]
 fn main() {
   let silent = launched_silent();
-  tauri::Builder::default()
+  let mut app = tauri::Builder::default()
     .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
       show_main_window(app);
     }))
@@ -188,52 +233,11 @@ fn main() {
         api.prevent_close();
         let window = event.window().clone();
         let _ = window.hide();
-        // ``setActivationPolicy:`` from Regular to Accessory only
-        // succeeds while the app is *not* active. The window-hide
-        // above schedules the deactivation onto AppKit's runloop but
-        // doesn't synchronously take effect, so a same-tick flip
-        // would race the deactivation and silently fail (the call
-        // returns ``false`` and the Dock icon stays). Spawn an async
-        // retry chain that bounces back to the main thread (NSApp
-        // APIs are main-thread only) at increasing delays until
-        // either it succeeds or we give up after ~1s. ``visible(true)``
-        // doesn't need this dance; promotion to Regular is documented
-        // to always succeed.
-        //
-        // We capture ``DOCK_GENERATION`` at spawn time and re-check it
-        // inside each main-thread attempt. If ``show_main_window``
-        // bumps the counter while we're sleeping (e.g. a fast
-        // close-then-reopen via the tray), the retry aborts so it
-        // can't demote a now-visible window back to Accessory.
-        let captured_gen = DOCK_GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
-        tauri::async_runtime::spawn(async move {
-          for delay_ms in [16u64, 64, 250, 750] {
-            tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
-            if DOCK_GENERATION.load(std::sync::atomic::Ordering::SeqCst) != captured_gen {
-              return;
-            }
-            let (tx, rx) = tokio::sync::oneshot::channel();
-            let dispatched = window.run_on_main_thread(move || {
-              // Re-check on the main thread to avoid the window
-              // between our load above and ``show_main_window``'s
-              // task running.
-              if DOCK_GENERATION.load(std::sync::atomic::Ordering::SeqCst) != captured_gen {
-                let _ = tx.send(true);
-                return;
-              }
-              let _ = tx.send(set_dock_visible(false));
-            });
-            // If the window/app is already torn down, run_on_main_thread
-            // errors out and rx will dangle. Bail in that case rather
-            // than burning the remaining attempts on a dead handle.
-            if dispatched.is_err() {
-              return;
-            }
-            if let Ok(true) = rx.await {
-              return;
-            }
-          }
-        });
+        // Demote back to Accessory so the Dock icon disappears with
+        // the (now-hidden) window. The retry chain handles the case
+        // where AppKit hasn't finished delivering the deactivation
+        // event triggered by ``window.hide()``.
+        schedule_demote_to_accessory(window);
       }
     })
     .invoke_handler(tauri::generate_handler![
@@ -249,8 +253,25 @@ fn main() {
       is_desktop_autostart_enabled,
       set_desktop_autostart
     ])
-    .run(tauri::generate_context!())
-    .expect("error while running tauri application");
+    .build(tauri::generate_context!())
+    .expect("error while building tauri application");
+
+  // Tauri 1.2.4's underlying tao runtime unconditionally calls
+  // ``[NSApp setActivationPolicy:NSApplicationActivationPolicyRegular]``
+  // during ``applicationDidFinishLaunching``, silently overriding the
+  // ``LSUIElement = true`` we set in Info.plist. The ``App::set_activation_policy``
+  // API stores the desired value into tao's aux state *before* the
+  // event loop runs, so when the launching callback fires it reads
+  // ``Accessory`` and never installs a Dock icon for silent autostarts
+  // in the first place. This must happen before ``run`` and is the
+  // only correct way to suppress the icon at launch \u2014 a runtime
+  // demotion via ``setActivationPolicy:`` after the app is active is
+  // documented as best-effort and can fail silently.
+  if silent {
+    app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+  }
+
+  app.run(|_app_handle, _event| {});
 }
 
 #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
