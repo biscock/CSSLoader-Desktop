@@ -9,7 +9,6 @@ import { osContext } from "@contexts/osContext";
 import { ImSpinner5 } from "react-icons/im";
 import { CreateTemplateTheme } from "@components/Settings";
 import { fetch, Body } from "@tauri-apps/api/http";
-import { invoke } from "@tauri-apps/api";
 
 export default function SettingsPage() {
   const [token, setToken] = useState<string>("");
@@ -62,7 +61,12 @@ export default function SettingsPage() {
   const [autostartEnabled, setAutostartEnabled] = useState<boolean>(false);
 
   async function fetchAutostartState() {
+    // ``@tauri-apps/api`` touches ``window`` at module load, so it must be
+    // dynamically imported here — Next.js's static page-data collection step
+    // runs in plain Node and would otherwise fail with ``window is not
+    // defined`` (the rest of this file follows the same pattern below).
     try {
+      const { invoke } = await import("@tauri-apps/api");
       const supported = await invoke<boolean>("is_desktop_autostart_supported");
       setAutostartSupported(supported);
       if (supported) {
@@ -77,6 +81,7 @@ export default function SettingsPage() {
   async function updateAutostart(value: boolean) {
     setOngoingAction(true);
     try {
+      const { invoke } = await import("@tauri-apps/api");
       await invoke("set_desktop_autostart", { enabled: value });
       setAutostartEnabled(value);
       toast(value ? "Run at startup enabled" : "Run at startup disabled");
