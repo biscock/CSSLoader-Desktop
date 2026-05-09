@@ -4,6 +4,7 @@ import { ThemePatch } from "./ThemePatch";
 import { RiArrowDownSFill, RiArrowUpSFill } from "react-icons/ri";
 import { themeContext } from "@contexts/themeContext";
 import { generatePreset, generatePresetFromThemeNames, setThemeState, toast } from "../../backend";
+import { resolveAndDownloadMissingDeps } from "../../logic";
 import { AlertDialog, ToggleSwitch } from "..";
 import { twMerge } from "tailwind-merge";
 
@@ -123,6 +124,36 @@ export function ThemeToggle({
               if (switchValue === true && data.flags.includes(Flags.optionalDeps)) {
                 setShowOptDepsModal(true);
                 return;
+              }
+              // When enabling a theme/preset, auto-download any of its
+              // dependencies that aren't installed locally yet. We do this
+              // BEFORE setThemeState so the backend never sees a "preset
+              // refers to a theme we don't have" state. Toasts surface
+              // progress to the user; nothing here is fatal \u2014 themes that
+              // can't be located/downloaded are reported at the end and the
+              // preset is still applied with whatever made it through.
+              if (switchValue && data.dependencies.length > 0) {
+                const result = await resolveAndDownloadMissingDeps(
+                  data.dependencies,
+                  themes,
+                  ({ current, total, themeName }) =>
+                    toast(`Downloading ${current} of ${total}`, themeName)
+                );
+                if (result.downloaded.length > 0) {
+                  await refreshThemes();
+                }
+                if (result.notFound.length > 0) {
+                  toast(
+                    "Some dependencies could not be found",
+                    result.notFound.join(", ")
+                  );
+                }
+                if (result.failed.length > 0) {
+                  toast(
+                    "Some dependencies failed to download",
+                    result.failed.join(", ")
+                  );
+                }
               }
               // Actually enabling the theme
               await setThemeState(data.name, switchValue);

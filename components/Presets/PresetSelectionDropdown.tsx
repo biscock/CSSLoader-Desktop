@@ -2,7 +2,8 @@ import { useContext, useMemo, useState } from "react";
 import { CreatePresetModal, RadioDropdown, Tooltip } from "..";
 import { themeContext } from "@contexts/themeContext";
 import { Flags } from "ThemeTypes";
-import { changePreset, deletePreset, setThemeState } from "backend";
+import { changePreset, deletePreset, setThemeState, toast } from "backend";
+import { resolveAndDownloadMissingDeps } from "../../logic";
 import { MenuDropdown } from "@components/Primitives/MenuDropdown";
 import { BiTrash } from "react-icons/bi";
 import { twMerge } from "tailwind-merge";
@@ -47,6 +48,33 @@ export function PresetSelectionDropdown() {
             // Still checks name as a fallback
             const themeEntry = themes.find((f) => f?.display_name === e || f.name === e);
             if (themeEntry) {
+              // Auto-download any of the preset's dependencies that aren't
+              // installed locally yet. Done BEFORE changePreset so the
+              // backend always sees a fully-resolved dep set when it
+              // enables the preset. Toasts mirror the ones in ThemeToggle.
+              if (themeEntry.dependencies.length > 0) {
+                const result = await resolveAndDownloadMissingDeps(
+                  themeEntry.dependencies,
+                  themes,
+                  ({ current, total, themeName }) =>
+                    toast(`Downloading ${current} of ${total}`, themeName)
+                );
+                if (result.downloaded.length > 0) {
+                  await refreshThemes();
+                }
+                if (result.notFound.length > 0) {
+                  toast(
+                    "Some dependencies could not be found",
+                    result.notFound.join(", ")
+                  );
+                }
+                if (result.failed.length > 0) {
+                  toast(
+                    "Some dependencies failed to download",
+                    result.failed.join(", ")
+                  );
+                }
+              }
               await changePreset(themeEntry.name, themes);
             }
             refreshThemes();
