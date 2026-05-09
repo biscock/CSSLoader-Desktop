@@ -40,13 +40,9 @@ function BackendLoadingTagline() {
 export function BackendFailedPage() {
   const { isManagedBackend, isMacOS } = useContext(osContext);
   const { recheckDummy } = useContext(backendStatusContext);
-  const [hasWaited, setWaited] = useState<boolean>(false);
   const [canRestart, setCanRestart] = useState(true);
   useEffect(() => {
     recheckDummy();
-    setTimeout(() => {
-      setWaited(true);
-    }, 10000);
   }, []);
 
   async function forceRestart() {
@@ -99,10 +95,8 @@ export function BackendFailedPage() {
         </div>
         {isManagedBackend && (
           <button
-            disabled={!hasWaited}
             className="font-fancy absolute bottom-4 left-1/2 -translate-x-1/2 rounded-full border-2 border-borders-base1-dark bg-base-3-dark p-2 px-4 text-xs font-bold transition-all duration-300 hover:border-borders-base2-dark"
-            style={{ opacity: hasWaited ? 1 : 0 }}
-            onClick={() => hasWaited && forceRestart()}
+            onClick={() => forceRestart()}
           >
             Force Restart Backend
           </button>

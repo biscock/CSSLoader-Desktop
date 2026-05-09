@@ -89,7 +89,15 @@ export default function App(AppProps: AppProps) {
     recursiveCheck(
       dummyFuncTest,
       () => refreshThemes(true),
-      () => isManagedBackend && startBackend()
+      () => isManagedBackend && startBackend(),
+      // Persistent-failure hook: if the dummy never comes back after the
+      // initial spawn, re-run startBackend every 5s. The standalone backend
+      // can quit during init on macOS when Steam isn't running yet (the
+      // CDP-attach call fails), so this loops until the user has both the
+      // backend AND Steam up \u2014 no manual "Force Restart Backend" click
+      // required.
+      () => isManagedBackend && startBackend(),
+      5
     );
   }
 
